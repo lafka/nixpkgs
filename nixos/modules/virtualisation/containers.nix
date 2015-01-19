@@ -213,6 +213,10 @@ in
               extraFlags+=" --network-macvlan=$iface"
             done
 
+				if [ ! -z "$BRIDGE_NETWORK" ]; then
+					extraFlags +=" --network-bridge=$BRIDGE_NETWORK
+				fi
+
             # If the host is 64-bit and the container is 32-bit, add a
             # --personality flag.
             ${optionalString (config.nixpkgs.system == "x86_64-linux") ''

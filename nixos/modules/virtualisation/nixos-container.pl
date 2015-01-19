@@ -17,7 +17,7 @@ umask 0022;
 sub showHelp {
     print <<EOF;
 Usage: nixos-container list
-       nixos-container create <container-name> [--system-path <path>] [--config <string>] [--ensure-unique-name] [--auto-start]
+       nixos-container create <container-name> [--system-path <path>] [--config <string>] [--ensure-unique-name] [--auto-start] [--bridge <iface>] [--use-dhcp]
        nixos-container destroy <container-name>
        nixos-container start <container-name>
        nixos-container stop <container-name>
@@ -34,12 +34,16 @@ EOF
 my $systemPath;
 my $ensureUniqueName = 0;
 my $autoStart = 0;
+my $useDHCP = 0;
+my $bridge;
 my $extraConfig;
 
 GetOptions(
     "help" => sub { showHelp() },
     "ensure-unique-name" => \$ensureUniqueName,
     "auto-start" => \$autoStart,
+    "bridge=s" => \$bridge,
+    "use-dhcp" => \$useDHCP,
     "system-path=s" => \$systemPath,
     "config=s" => \$extraConfig
     ) or exit 1;
@@ -63,9 +67,12 @@ if ($action eq "list") {
 my $containerName = $ARGV[1] or die "$0: no container name specified\n";
 $containerName =~ /^[a-zA-Z0-9\-]+$/ or die "$0: invalid container name\n";
 
+my $useDHCP = "false";
+
 sub writeNixOSConfig {
     my ($nixosConfigFile) = @_;
 
+    my $dhcp = $useDHCP ? "true" : "false";
     my $nixosConfig = <<EOF;
 { config, lib, pkgs, ... }:
 
@@ -73,7 +80,7 @@ with lib;
 
 { boot.isContainer = true;
   networking.hostName = mkDefault "$containerName";
-  networking.useDHCP = false;
+  networking.useDHCP = "$dhcp";
   $extraConfig
 }
 EOF
@@ -127,6 +134,7 @@ if ($action eq "create") {
     push @conf, "PRIVATE_NETWORK=1\n";
     push @conf, "HOST_ADDRESS=$hostAddress\n";
     push @conf, "LOCAL_ADDRESS=$localAddress\n";
+    push @conf, "BRIDGE_NETWORK=$bridge\n";
     push @conf, "AUTO_START=$autoStart\n";
     write_file($confFile, \@conf);
 
