@@ -1,0 +1,96 @@
+
+name: Release
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "nixos-*-small"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # AWS keys are used for uploading artifacts to s3
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  # S3 bucket containing source code
+  #TARGET_BUCKETS: ${{ vars.TARGET_BUCKETS }}
+  # TARGET_BUCKETS: "rl-storage-nix-test rl-storage-nix-source"
+  TARGET_BUCKETS: "raaoutputs"
+  AWS_ENDPOINT: ${{ vars.AWS_ENDPOINT }}
+  WORKSPACE_DIR: ${{ github.workspace }}
+  DIST_DIR: ${{ github.workspace }}/dist
+  CACHE_ENDPOINT: "https://hub.raalabs.tech/softwareupate/"
+
+jobs:
+  release:
+    runs-on: raaedge-connect-self-hosted
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir --mode=0700 -p ~/.ssh
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Show SSH Facts
+        run: |
+          echo "Known hosts:" && \
+          cat ~/.ssh/known_hosts && \
+          echo "-----" && \
+          echo "SSH identities:"
+          ssh-add -l || true
+          echo "-----"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: push archive to binary-cache
+        run: |
+          # Ensure we get nix even if environement is not set correctly
+          if ! command -v nix-shell; then
+            # Ensure we USER is set, otherwise nix.sh won't add anything to path
+            USER=${USER:-$(whoami)}
+            export USER
+          
+            . $HOME/.nix-profile/etc/profile.d/nix.sh
+          fi
+
+          tag=v$(git show -s --format="%cI" | sed 's/[Z:-]//g;s/T/-/' 2> /dev/null)
+
+          for AWS_BUCKET in ${{ env.TARGET_BUCKETS }}; do
+            # tar.gz files can't be appended, create a tar file first
+            # and compress it later
+            OUTPUT="${{ env.DIST_DIR }}/${AWS_BUCKET}/${tag}.tar"
+
+            cat > metadata <<EOF
+          COMMIT_DATE=$(git show -s --format="%ct")
+          AUTHOR_DATE=$(git show -s --format="%at")
+          COMMIT=$(git show -s --format="%H")
+          DESC=$(git describe --tags --always)
+          URL=${CACHE_ENDPOINT}/${AWS_BUCKET}/dist/nixpkgs-${tag}.tar.gz
+          NIXOS_VERSION=$(cat .version)
+          EOF
+
+            # Append the metadata,
+            mkdir -p "$(dirname $OUTPUT)"
+            git archive --output "$OUTPUT" HEAD
+            tar --append "--file=$OUTPUT" metadata
+            gzip "$OUTPUT"
+            OUTPUT="${OUTPUT}.gz"
+
+            # Set correct checksum mode for AWS client
+            mkdir -p ~/.aws
+            cat > ~/.aws/config <<EOF
+          [default]
+          endpoint_url = $AWS_ENDPOINT
+          request_checksum_calculation = when_required
+          EOF
+
+            # Upload a copy referenced by the unique tag, additionally update the link
+            # between branch and global name to this version.
+            aws s3 cp --content-type "application/gzip" "$OUTPUT" "s3://$AWS_BUCKET/dist/nixpkgs-$(basename $OUTPUT)"
+            for e in "${{ github.ref_name }}" latest; do
+              echo "${CACHE_ENDPOINT}/$AWS_BUCKET/dist/nixpkgs-$(basename $OUTPUT)" | sed 's~//~/~g' > ./$e
+              aws s3 cp "$e" "s3://$AWS_BUCKET/dist/nixpkgs-$e"
+            done
+          done
